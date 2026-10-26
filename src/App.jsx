@@ -1,13 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { decodeScooterPacket } from './scooterDecoder';
 import './App.css';
 
 export default function App() {
-  const [isSupported, setIsSupported] = useState(true);
+  const [isSupported] = useState(() => Boolean(navigator.bluetooth));
   const [isConnected, setIsConnected] = useState(false);
   const [device, setDevice] = useState(null);
-  const [server, setServer] = useState(null);
-  const [statusMessage, setStatusMessage] = useState('Disconnected');
+  const [statusMessage, setStatusMessage] = useState(() => 
+    navigator.bluetooth ? 'Disconnected' : 'Web Bluetooth API is not supported on this browser/device.'
+  );
   const [activeCharacteristicUuid, setActiveCharacteristicUuid] = useState(null);
 
   // Telemetry state
@@ -18,19 +19,10 @@ export default function App() {
   // Refs to hold active characteristic listeners/notifications for cleanup
   const activeCharacteristicsRef = useRef([]);
 
-  useEffect(() => {
-    // Feature detection for Web Bluetooth API
-    if (!navigator.bluetooth) {
-      setIsSupported(false);
-      setStatusMessage('Web Bluetooth API is not supported on this browser/device.');
-    }
-  }, []);
-
   // Handle disconnection event
   const handleDisconnection = () => {
     console.warn('[BLE] Scooter disconnected');
     setIsConnected(false);
-    setServer(null);
     setActiveCharacteristicUuid(null);
     setStatusMessage('Disconnected from scooter');
     setSpeed(null);
