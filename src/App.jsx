@@ -16,6 +16,12 @@ export default function App() {
   const [voltage, setVoltage] = useState(null);
   const [rawLog, setRawLog] = useState([]);
 
+  // Device Scanner state
+  const [scannedDevices, setscannedDevices] = useState([]);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState(null);
+  const [activeScan, setActiveScan] = useState(null);
+
   // Refs to hold active characteristic listeners/notifications for cleanup
   const activeCharacteristicsRef = useRef([]);
 
@@ -61,7 +67,6 @@ export default function App() {
       selectedDevice.addEventListener('gattserverdisconnected', handleDisconnection);
 
       const gattServer = await selectedDevice.gatt.connect();
-      setServer(gattServer);
       console.log('[BLE] Connected to GATT Server');
 
       setStatusMessage('Discovering services (FFF0)...');
@@ -151,6 +156,127 @@ export default function App() {
     }
   };
 
+  // Nearby BLE Scanner Handler
+  const startBleScan = async () => {
+    if (!navigator.bluetooth) {
+      alert('Web Bluetooth is not supported on this browser.');
+      return;
+    }
+
+    setScanError(null);
+    setIsScanning(true);
+
+    try {
+      // 1. Try requestLEScan if supported (Chrome Android flag / Experimental Web Platform features)
+      if (navigator.bluetooth.requestLEScan) {
+        try {
+          const scan = await navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true });
+          setActiveScan(scan);
+          console.log('[BLE Scan] Active LE Scan started successfully');
+
+          const abortController = new AbortController();
+          const handleAd = (event) => {
+            const advDevice = event.device;
+            const entry = {
+              id: advDevice.id,
+              name: advDevice.name || 'Unknown Device',
+              rssi: event.rssi !== undefined ? `${event.rssi} dBm` : 'N/A',
+              connectable: event.connectable !== undefined ? (event.connectable ? 'Yes' : 'No') : 'Unknown',
+              connected: advDevice.gatt?.connected ? 'Connected' : 'Disconnected',
+              rawDevice: advDevice
+            };
+
+            setscannedDevices(prev => {
+              const existingIdx = prev.findIndex(d => d.id === entry.id);
+              if (existingIdx >= 0) {
+                const updated = [...prev];
+                updated[existingIdx] = entry;
+                return updated;
+              } else {
+                return [...prev, entry];
+              }
+            });
+          };
+
+          navigator.bluetooth.addEventListener('advertisementreceived', handleAd, { signal: abortController.signal });
+
+          // Auto stop LE scan after 15 seconds
+          setTimeout(() => {
+            if (abortController.signal.aborted === false) {
+              abortController.abort();
+              if (scan && scan.stop) {
+                scan.stop();
+              }
+              setIsScanning(false);
+              setActiveScan(null);
+              console.log('[BLE Scan] LE Scan stopped automatically after timeout');
+            }
+          }, 15000);
+
+          return;
+        } catch (leErr) {
+          console.warn('[BLE Scan] requestLEScan not permitted or failed, falling back to requestDevice prompt:', leErr);
+        }
+      }
+
+      // 2. Standard Web Bluetooth fallback: requestDevice browser selection prompt
+      console.log('[BLE Scan] Using requestDevice picker prompt for device discovery...');
+      const pickedDevice = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [0xfff0]
+      });
+
+      const entry = {
+        id: pickedDevice.id,
+        name: pickedDevice.name || 'Unknown Device',
+        rssi: 'N/A',
+        connectable: 'Unknown',
+        connected: pickedDevice.gatt?.connected ? 'Connected' : 'Disconnected',
+        rawDevice: pickedDevice
+      };
+
+      setscannedDevices(prev => {
+        if (prev.some(d => d.id === entry.id)) return prev;
+        return [...prev, entry];
+      });
+      setIsScanning(false);
+
+    } catch (scanErr) {
+      console.error('[BLE Scan Error]:', scanErr);
+      setScanError(scanErr.message || 'Scan cancelled or failed.');
+      setIsScanning(false);
+    }
+  };
+
+  const stopBleScan = () => {
+    if (activeScan && activeScan.stop) {
+      try {
+        activeScan.stop();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setActiveScan(null);
+    setIsScanning(false);
+  };
+
+  const connectToScannedDevice = async (scannedEntry) => {
+    try {
+      const targetDevice = scannedEntry.rawDevice;
+      if (!targetDevice) return;
+
+      console.log(`[BLE Scan] Connecting to selected device: ${targetDevice.name || targetDevice.id}`);
+      const gattServer = await targetDevice.gatt.connect();
+      console.log('[BLE Scan] Connected to GATT server of selected device:', gattServer);
+      alert(`Successfully connected to ${targetDevice.name || 'Device'}!`);
+
+      setscannedDevices(prev => prev.map(d => d.id === scannedEntry.id ? { ...d, connected: 'Connected' } : d));
+    } catch (err) {
+      console.error('[BLE Scan Connect Error]:', err);
+      alert(`Failed to connect: ${err.message || err}`);
+    }
+  };
+
   const disconnectScooter = () => {
     if (device && device.gatt.connected) {
       device.gatt.disconnect();
@@ -194,6 +320,48 @@ export default function App() {
                 Disconnect Scooter
               </button>
             )}
+
+            {/* Nearby Scanner Section */}
+            <div className="scanner-control-group">
+              {!isScanning ? (
+                <button className="btn-scan" onClick={startBleScan}>
+                  Scan Devices
+                </button>
+              ) : (
+                <button className="btn-stop-scan" onClick={stopBleScan}>
+                  Stop Scanning
+                </button>
+              )}
+            </div>
+
+            {scanError && <div className="scan-error-msg">{scanError}</div>}
+
+            {scannedDevices.length > 0 && (
+              <div className="scanned-devices-container">
+                <h3>Discovered Bluetooth Devices ({scannedDevices.length})</h3>
+                <div className="device-list">
+                  {scannedDevices.map(entry => (
+                    <div key={entry.id} className="device-item">
+                      <div className="device-meta">
+                        <span className="device-name">{entry.name}</span>
+                        <span className="device-id">ID: {entry.id}</span>
+                        <div className="device-details-row">
+                          <span>RSSI: {entry.rssi}</span>
+                          <span>Connectable: {entry.connectable}</span>
+                          <span className={`device-status ${entry.connected === 'Connected' ? 'connected' : ''}`}>
+                            {entry.connected}
+                          </span>
+                        </div>
+                      </div>
+                      <button className="btn-connect-device" onClick={() => connectToScannedDevice(entry)}>
+                        Connect
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {activeCharacteristicUuid && (
               <div className="active-char-info">
                 Active RX: <code>{activeCharacteristicUuid}</code>
